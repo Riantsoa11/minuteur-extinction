@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+build/
+dist/
+.venv/
+venv/
+.vscode/
+.idea/
+*.log
+config.json
+usage.json
+profiles.json

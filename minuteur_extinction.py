@@ -111,6 +111,10 @@ I18N = {
         "warn_minute": "⚠ Plus qu'une minute !", "about_to": "{a} dans…",
         "waiting_proc": "Fermeture de", "download_done": "Téléchargement fini",
         "preset_full": "6 préréglages max. Clic droit pour en supprimer un.",
+        "confirm_title": "Confirmer l'action",
+        "confirm_msg": "Tu vas lancer : {a}\n{when}\n\nContinuer ?",
+        "confirm_yes": "Oui, lancer", "confirm_no": "Annuler",
+        "grace_banner": "⚠ {a} dans {t} — clique pour annuler",
     },
     "en": {
         "title": "Shutdown Timer", "subtitle": "Schedule your PC's shutdown",
@@ -131,6 +135,10 @@ I18N = {
         "warn_minute": "⚠ One minute left!", "about_to": "{a} in…",
         "waiting_proc": "Waiting for", "download_done": "Download finished",
         "preset_full": "Max 6 presets. Right-click one to delete it.",
+        "confirm_title": "Confirm action",
+        "confirm_msg": "You're about to run: {a}\n{when}\n\nContinue?",
+        "confirm_yes": "Yes, start", "confirm_no": "Cancel",
+        "grace_banner": "⚠ {a} in {t} — click to cancel",
     },
 }
 
@@ -142,7 +150,11 @@ DEFAULT_CFG = {
     "webhook": "", "api_enabled": False, "api_port": 8787, "api_token": "",
     "recurrent_enabled": False, "recurrent_time": "02:00",
     "recurrent_action": "Éteindre", "recurrent_idle_min": 15,
+    # Confirmations avant actions destructives (Chantier 3)
+    "confirm_destructive": True,       # Demander confirmation pour Éteindre/Redémarrer/Hibernation
+    "confirm_threshold_sec": 120,      # ... ET aussi quand la durée restante est < ce seuil (sec)
 }
+DESTRUCTIVE = {"Éteindre", "Redémarrer", "Hibernation"}
 
 
 # ========= UTILS CONFIG =========
@@ -479,6 +491,78 @@ def lan_ip():
 
 
 # ========= APPLICATION =========
+# ========= DIALOG DE CONFIRMATION =========
+class ConfirmDialog(ctk.CTkToplevel):
+    """Modale de confirmation pour actions destructives.
+    Focus par défaut sur Annuler (sécurité). Esc = Annuler, Enter = Confirmer.
+    """
+
+    def __init__(self, parent, action, when_text, on_confirm):
+        super().__init__(parent)
+        self.app = parent; c = parent.theme; t = parent.t
+        self.title(t["confirm_title"]); self.configure(fg_color=c["bg"])
+        self.resizable(False, False); self.transient(parent); self.grab_set()
+        self._fired = False
+        self.on_confirm = on_confirm
+        accent = ACTIONS[action]
+
+        wrap = ctk.CTkFrame(self, fg_color=c["bg"], corner_radius=0)
+        wrap.pack(padx=SP["xl"], pady=SP["lg"])
+
+        # Icône + titre
+        head = ctk.CTkFrame(wrap, fg_color="transparent"); head.pack(fill="x")
+        tk.Label(head, text="⚠", bg=c["bg"], fg=accent,
+                 font=(FONT, FS["display"], "bold")).pack(side="left", padx=(0, SP["md"]))
+        headr = ctk.CTkFrame(head, fg_color="transparent"); headr.pack(side="left", fill="x", expand=True)
+        tk.Label(headr, text=t["confirm_title"], bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["lg"], "bold"), anchor="w").pack(fill="x")
+        action_label = parent._act_key2label.get(action, action)
+        tk.Label(headr, text=action_label, bg=c["bg"], fg=accent,
+                 font=(FONT, FS["md"], "bold"), anchor="w").pack(fill="x")
+
+        # Récap
+        recap = tk.Label(wrap, text=when_text, bg=c["bg"], fg=c["muted"],
+                          font=(FONT, FS["sm"]), justify="left", wraplength=380)
+        recap.pack(fill="x", pady=(SP["md"], SP["lg"]))
+
+        # Boutons
+        btns = ctk.CTkFrame(wrap, fg_color="transparent"); btns.pack(fill="x")
+        cancel = ctk.CTkButton(btns, text=t["confirm_no"], command=self._cancel,
+                                fg_color=c["card"], hover_color=c["hover"],
+                                text_color=c["text"], font=ctk.CTkFont(FONT, FS["md"], "bold"),
+                                height=42, corner_radius=RADIUS["md"], border_width=1,
+                                border_color=c["border"])
+        cancel.pack(side="left", expand=True, fill="x", padx=(0, SP["xs"]))
+        confirm = ctk.CTkButton(btns, text=t["confirm_yes"], command=self._confirm,
+                                 fg_color=accent, hover_color=accent, text_color="#ffffff",
+                                 font=ctk.CTkFont(FONT, FS["md"], "bold"),
+                                 height=42, corner_radius=RADIUS["md"])
+        confirm.pack(side="left", expand=True, fill="x", padx=(SP["xs"], 0))
+
+        # Raccourcis clavier : Esc = annuler, Enter = confirmer
+        self.bind("<Escape>", lambda e: self._cancel())
+        self.bind("<Return>", lambda e: self._confirm())
+        cancel.focus_set()  # Focus défensif sur Annuler
+
+        # Centrage
+        self.update_idletasks()
+        px = parent.winfo_rootx() + parent.winfo_width() // 2 - self.winfo_width() // 2
+        py = parent.winfo_rooty() + parent.winfo_height() // 2 - self.winfo_height() // 2
+        self.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+    def _confirm(self):
+        if self._fired: return
+        self._fired = True
+        self.grab_release(); self.destroy()
+        try: self.on_confirm()
+        except Exception: pass
+
+    def _cancel(self):
+        if self._fired: return
+        self._fired = True
+        self.grab_release(); self.destroy()
+
+
 class App(ctk.CTk):
     RING = 240
 
@@ -716,6 +800,15 @@ class App(ctk.CTk):
         self.recap_lbl = tk.Label(self.root_fr, text="", bg=c["bg"], fg=c["muted"],
                                    font=(FONT, FS["sm"], "italic"))
         self.recap_lbl.pack(fill="x", pady=(SP["sm"], 0))
+
+        # Bannière de grâce (apparaît pendant la dernière minute avant action destructive)
+        self.grace_banner = ctk.CTkButton(
+            self.root_fr, text="", command=self._cancel,
+            fg_color=c["warn"], hover_color=c["warn"], text_color="#000000",
+            font=ctk.CTkFont(FONT, FS["md"], "bold"),
+            height=38, corner_radius=RADIUS["md"])
+        # Pas de pack ici : affichée uniquement pendant la grâce
+        self._grace_visible = False
 
         # Boutons d'extension (+5/+15/+1h) pendant countdown — rangée persistante
         self.extend_row = ctk.CTkFrame(self.root_fr, fg_color="transparent")
@@ -1046,25 +1139,65 @@ class App(ctk.CTk):
     def _toggle(self):
         self._cancel() if self.state_ != "idle" else self._start()
 
+    def _needs_confirmation(self, mode):
+        """Détermine si on doit demander confirmation avant de lancer."""
+        if not self.cfg.get("confirm_destructive", True):
+            return False
+        act = self.action.get()
+        if act not in DESTRUCTIVE:
+            return False
+        # Scénario : confirme si au moins une étape est destructive
+        if mode == "Scénario":
+            return any(st["action"] in DESTRUCTIVE for st in self.scenario)
+        # Confirme toujours pour les destructives — sauf si le délai dépasse largement le seuil
+        # ET que l'action est seulement Hibernation (moins critique qu'un shutdown)
+        thr = int(self.cfg.get("confirm_threshold_sec", 120))
+        if mode == "Minuteur":
+            sec = self._hms()
+            # Au-dessus du seuil, on confirme uniquement pour Éteindre (sécurité renforcée)
+            return sec < thr or act == "Éteindre"
+        if mode == "Heure fixe":
+            sec = self._secs_until_clock()[0]
+            return sec < thr or act == "Éteindre"
+        # Processus / Réseau : attente indéterminée → on confirme systématiquement les destructives
+        return True
+
     def _start(self):
         if self.state_ != "idle": return
         mode = self.mode.get()
-        if mode == "Minuteur":
-            sec = self._hms()
-            if sec <= 0: return messagebox.showwarning("Durée", "Choisis une durée > 0.")
-            self._lock(True); self._begin_countdown(sec)
-        elif mode == "Heure fixe":
-            self._lock(True); self._begin_countdown(self._secs_until_clock()[0])
-        elif mode == "Processus":
+        # Pré-validations rapides avant même d'envisager la confirmation
+        if mode == "Minuteur" and self._hms() <= 0:
+            return messagebox.showwarning("Durée", "Choisis une durée > 0.")
+        if mode == "Processus":
             name = self.proc.get().strip()
             if not name: return messagebox.showwarning("Processus", "Choisis un processus.")
             if not is_running(name): return messagebox.showwarning("Processus", f"« {name} » n'est pas en cours.")
+        if mode == "Réseau" and not psutil:
+            return messagebox.showerror("Réseau", "psutil manquant.")
+        if mode == "Scénario" and not self.scenario:
+            return messagebox.showwarning("Scénario", "Aucune étape.")
+
+        # Confirmation éventuelle sur action destructive
+        if self._needs_confirmation(mode):
+            when = self._build_recap()
+            msg = self.t["confirm_msg"].format(
+                a=self._act_key2label.get(self.action.get(), self.action.get()), when=when)
+            ConfirmDialog(self, self.action.get(), msg, on_confirm=self._do_start)
+            return
+        self._do_start()
+
+    def _do_start(self):
+        """Exécution effective du démarrage, après confirmation éventuelle."""
+        mode = self.mode.get()
+        if mode == "Minuteur":
+            self._lock(True); self._begin_countdown(self._hms())
+        elif mode == "Heure fixe":
+            self._lock(True); self._begin_countdown(self._secs_until_clock()[0])
+        elif mode == "Processus":
             self._lock(True); self.state_ = "waiting"; self._watch_process(); self._spinner()
         elif mode == "Réseau":
-            if not psutil: return messagebox.showerror("Réseau", "psutil manquant.")
             self._lock(True); self.state_ = "waiting"; self.idle_s = 0; self._spinner()
         else:
-            if not self.scenario: return messagebox.showwarning("Scénario", "Aucune étape.")
             self._lock(True); self.scenario_queue = list(self.scenario); self._next_scenario()
         self._save()
 
@@ -1099,6 +1232,7 @@ class App(ctk.CTk):
     def _begin_countdown(self, sec, reason=""):
         self.state_ = "countdown"; self.total = sec
         self.deadline = time.time() + sec; self.reason = reason; self.warned = False
+        self._hide_grace_banner()
         self._render_extend(True); self._tick()
 
     def _render_extend(self, show):
@@ -1113,6 +1247,9 @@ class App(ctk.CTk):
         self.deadline += sec; self.total += sec; self.warned = False
         self.attributes("-topmost", self.pin.get())
         self.canvas.itemconfigure(self.arc, outline=self._accent())
+        # Si on repasse au-dessus d'1 min, cache la bannière de grâce
+        if self.deadline - time.time() > 60:
+            self._hide_grace_banner()
 
     def _tick(self):
         rem = max(0.0, self.deadline - time.time()); shown = math.ceil(rem)
@@ -1127,9 +1264,28 @@ class App(ctk.CTk):
             self.deiconify(); self.attributes("-topmost", True); self.lift(); beep()
             if self.cfg["notify"]:
                 notify(self.t["title"], self.t["warn_minute"] + f" ({self.action.get()})")
+            self._show_grace_banner()
+
+        # Rafraîchit le texte de la bannière chaque seconde
+        if self._grace_visible:
+            self.grace_banner.configure(
+                text=self.t["grace_banner"].format(
+                    a=self._act_key2label.get(self.action.get(), self.action.get()),
+                    t=fmt_hms(shown)[3:]))
 
         if rem <= 0: return self._fire()
         self._after("tick", 200, self._tick)
+
+    def _show_grace_banner(self):
+        if self._grace_visible: return
+        self._grace_visible = True
+        # Pack au-dessus du bouton principal
+        self.grace_banner.pack(fill="x", pady=(SP["xs"], SP["xs"]), before=self.main_btn)
+
+    def _hide_grace_banner(self):
+        if not self._grace_visible: return
+        self._grace_visible = False
+        self.grace_banner.pack_forget()
 
     def _spinner(self):
         if self.state_ != "waiting": return
@@ -1207,7 +1363,8 @@ class App(ctk.CTk):
         if self.state_ == "idle" and not self.jobs: return
         self._stop_jobs(); self.state_ = "idle"; self.scenario_queue = []
         self.attributes("-topmost", self.pin.get())
-        self._render_extend(False); self._lock(False); self._refresh_idle()
+        self._render_extend(False); self._hide_grace_banner()
+        self._lock(False); self._refresh_idle()
 
     def _on_close(self):
         if self.state_ != "idle" and not messagebox.askyesno(
@@ -1450,6 +1607,26 @@ class SettingsWindow(tk.Toplevel):
                        bg=c["bg"], fg=c["text"], selectcolor=c["card"],
                        activebackground=c["bg"], activeforeground=c["text"],
                        font=(FONT, 9), bd=0, highlightthickness=0).pack(anchor="w")
+
+        self._section(wrap, "Sécurité")
+        cv = tk.BooleanVar(value=cfg.get("confirm_destructive", True))
+        tk.Checkbutton(wrap,
+                       text="Demander confirmation avant Éteindre / Redémarrer / Hibernation",
+                       variable=cv, command=lambda: self._set("confirm_destructive", cv.get()),
+                       bg=c["bg"], fg=c["text"], selectcolor=c["card"],
+                       activebackground=c["bg"], activeforeground=c["text"],
+                       font=(FONT, 9), bd=0, highlightthickness=0,
+                       wraplength=460, justify="left").pack(anchor="w")
+        tr = self._row(wrap, "  Seuil de rappel (sec)")
+        tv2 = tk.StringVar(value=str(cfg.get("confirm_threshold_sec", 120)))
+        tk.Entry(tr, textvariable=tv2, width=6, bg=c["card"], fg=c["text"], relief="flat",
+                 insertbackground=c["text"], font=(FONT, 10), justify="center").pack(side="left", padx=4, ipady=3)
+        tv2.trace_add("write",
+                      lambda *_: self._set("confirm_threshold_sec", to_int(tv2.get(), 120)))
+        tk.Label(wrap,
+                 text="En dessous de ce seuil, confirmation demandée même pour Veille / Verrouiller si l'action est destructive.",
+                 bg=c["bg"], fg=c["muted"], font=(FONT, 8),
+                 wraplength=460, justify="left").pack(anchor="w", pady=(2, 0))
 
         self._section(wrap, "Récurrence quotidienne")
         rv = tk.BooleanVar(value=cfg["recurrent_enabled"])

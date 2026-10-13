@@ -28,13 +28,24 @@
 - Niveau de batterie et autonomie restante
 
 ### 🎨 UX
-- 🌙 Thème clair / sombre, auto selon Windows
+- 🌙 Thème clair / sombre, auto selon Windows — **bascule à chaud** sans redémarrer
 - 🇫🇷 🇬🇧 Français et anglais
 - 📌 Épinglage de la fenêtre
-- 📦 Mode compact (fenêtre minimale avec juste l'anneau)
+- 📦 **Mode compact** sans décoration, drag-to-move, double-clic pour agrandir
 - 🔔 Icône dans la zone de notification Windows avec le compte à rebours dans l'infobulle
 - 🪟 Notifications Windows natives à 1 minute de la fin
-- ⌨️ Raccourcis : `Entrée` démarre, `Échap` annule
+- 🛡 **Confirmation** avant actions destructives (Éteindre / Redémarrer / Hibernation)
+- ⚠ **Bannière d'annulation** pleine largeur pendant la dernière minute
+- ✅ Validation visuelle des champs numériques (bordure rouge si hors plage)
+- ⌨️ Raccourcis clavier :
+
+| Touche | Action |
+|---|---|
+| `Entrée` | Démarrer |
+| `Échap` | Annuler |
+| `Ctrl + ,` | Paramètres |
+| `Ctrl + K` | Mode compact |
+| `F1` ou `?` | Aide raccourcis |
 
 ### 🔗 Intégrations
 - **Webhook Discord / Slack** : un message est posté après chaque action (`"PC → Éteindre à 23:47"`)
@@ -64,8 +75,13 @@ python minuteur_extinction.py
 
 ```bash
 pip install -r requirements.txt pyinstaller
-pyinstaller --onefile --windowed --icon power.ico --add-data "power.ico;." minuteur_extinction.py
+pyinstaller --onefile --windowed --icon power.ico ^
+  --add-data "power.ico;." ^
+  --collect-data customtkinter ^
+  minuteur_extinction.py
 ```
+
+> `--collect-data customtkinter` est **obligatoire** depuis la refonte UI : les thèmes et polices de CustomTkinter sont chargés depuis des fichiers de ressources qui doivent être embarqués dans l'exe.
 
 ---
 
@@ -127,7 +143,7 @@ Toutes les données sont stockées localement dans :
 
 ## 🛠️ Stack technique
 
-- **Python 3.10+** avec **Tkinter** (interface native)
+- **Python 3.10+** avec **Tkinter** + **[CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)** (interface moderne)
 - **psutil** pour la surveillance système
 - **pystray** + **Pillow** pour l'icône de notification
 - **plyer** pour les notifications Windows

@@ -1483,72 +1483,137 @@ class App(ctk.CTk):
 
 
 # ========= FENÊTRES SECONDAIRES =========
-class StatsWindow(tk.Toplevel):
+class StatsWindow(ctk.CTkToplevel):
+    """Fenêtre de statistiques : cartes arrondies, graphique 30j avec axes + tooltip, top 5 apps, batterie."""
+
     def __init__(self, parent):
         super().__init__(parent); self.app = parent; self.c = parent.theme
-        self.title(parent.t["stats"]); self.configure(bg=self.c["bg"]); self.resizable(False, False)
-        self.transient(parent); self._build()
+        self.title(parent.t["stats"]); self.configure(fg_color=self.c["bg"])
+        self.resizable(False, False); self.transient(parent)
+        self._bars = []  # (x1, y1, x2, y2, date, sec) pour tooltip
+        self._tip = None
+        self._build()
 
     def _card(self, parent, label, value, color=None):
+        """Carte stat : fond card, bordure fine, coins arrondis."""
         c = self.c
-        f = tk.Frame(parent, bg=c["card"])
-        tk.Label(f, text=label, bg=c["card"], fg=c["muted"], font=(FONT, 9)).pack(anchor="w", padx=12, pady=(10, 2))
+        f = ctk.CTkFrame(parent, fg_color=c["card"], corner_radius=RADIUS["lg"],
+                         border_width=1, border_color=c["border"])
+        tk.Label(f, text=label, bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["sm"])).pack(anchor="w", padx=SP["md"], pady=(SP["md"], 2))
         tk.Label(f, text=value, bg=c["card"], fg=color or c["text"],
-                 font=(FONT, 18, "bold")).pack(anchor="w", padx=12, pady=(0, 12))
+                 font=(FONT, FS["xl"], "bold")).pack(anchor="w", padx=SP["md"], pady=(0, SP["md"]))
         return f
 
     def _build(self):
         c = self.c; t = self.app.tracker; lang = self.app.lang
-        wrap = tk.Frame(self, bg=c["bg"], padx=18, pady=16); wrap.pack()
+        wrap = ctk.CTkFrame(self, fg_color=c["bg"], corner_radius=0)
+        wrap.pack(padx=SP["xl"], pady=SP["lg"])
 
-        row = tk.Frame(wrap, bg=c["bg"]); row.pack(fill="x", pady=(0, 8))
-        self._card(row, self.app.t["today"], fmt_duration_long(t.uptime_today(), lang)).pack(side="left", expand=True, fill="x", padx=3)
-        self._card(row, self.app.t["week"], fmt_duration_long(t.uptime_range(7), lang)).pack(side="left", expand=True, fill="x", padx=3)
-        self._card(row, self.app.t["month"], fmt_duration_long(t.uptime_range(30), lang)).pack(side="left", expand=True, fill="x", padx=3)
+        # ---- Rangée 1 : Aujourd'hui / Semaine / Mois ----
+        row = ctk.CTkFrame(wrap, fg_color="transparent"); row.pack(fill="x", pady=(0, SP["sm"]))
+        self._card(row, self.app.t["today"], fmt_duration_long(t.uptime_today(), lang)).pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
+        self._card(row, self.app.t["week"], fmt_duration_long(t.uptime_range(7), lang)).pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
+        self._card(row, self.app.t["month"], fmt_duration_long(t.uptime_range(30), lang)).pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
 
+        # ---- Rangée 2 : première/dernière + moyenne ----
         first, last = t.first_last_today()
-        row2 = tk.Frame(wrap, bg=c["bg"]); row2.pack(fill="x", pady=(0, 8))
-        self._card(row2, self.app.t["first_boot"], first or "—").pack(side="left", expand=True, fill="x", padx=3)
-        self._card(row2, self.app.t["last_off"], last or "—").pack(side="left", expand=True, fill="x", padx=3)
+        row2 = ctk.CTkFrame(wrap, fg_color="transparent"); row2.pack(fill="x", pady=(0, SP["sm"]))
+        self._card(row2, self.app.t["first_boot"], first or "—").pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
+        self._card(row2, self.app.t["last_off"], last or "—").pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
         avg = t.uptime_range(30) // 30
-        self._card(row2, self.app.t["avg_daily"], fmt_duration_long(avg, lang)).pack(side="left", expand=True, fill="x", padx=3)
+        self._card(row2, self.app.t["avg_daily"], fmt_duration_long(avg, lang)).pack(
+            side="left", expand=True, fill="x", padx=SP["xs"])
 
-        # graphique 30j
+        # ---- Graphique 30 jours : axes + grille + tooltip ----
         series = t.daily_series(30)
-        tk.Label(wrap, text="30 " + ("derniers jours" if lang == "fr" else "last days"),
-                 bg=c["bg"], fg=c["muted"], font=(FONT, 10)).pack(anchor="w", pady=(10, 4))
-        gw, gh = 540, 110
-        g = tk.Canvas(wrap, width=gw, height=gh, bg=c["card"], highlightthickness=0); g.pack()
-        peak = max((v for _, v in series), default=1) or 1
-        bw = gw / len(series)
-        for i, (_, v) in enumerate(series):
-            x = i * bw + bw * 0.1; h = (v / peak) * (gh - 20)
-            g.create_rectangle(x, gh - 10 - h, x + bw * 0.8, gh - 10,
-                               fill="#ff5c7a" if v else c["track"], outline="")
-        g.create_text(6, 10, text=fmt_duration_long(peak, lang), anchor="nw", fill=c["muted"], font=(FONT, 8))
+        tk.Label(wrap, text="📊 30 " + ("derniers jours" if lang == "fr" else "last days"),
+                 bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["base"], "bold")).pack(anchor="w", pady=(SP["md"], SP["xs"]))
 
-        # top apps
-        tk.Label(wrap, text=self.app.t["top_apps"], bg=c["bg"], fg=c["muted"],
-                 font=(FONT, 10)).pack(anchor="w", pady=(14, 4))
+        chart_card = ctk.CTkFrame(wrap, fg_color=c["card"], corner_radius=RADIUS["lg"],
+                                   border_width=1, border_color=c["border"])
+        chart_card.pack(fill="x")
+        gw, gh = 540, 140
+        # Marges pour axes : gauche (labels Y), bas (labels X)
+        ML, MR, MT, MB = 44, 10, 14, 22
+        iw, ih = gw - ML - MR, gh - MT - MB
+        g = tk.Canvas(chart_card, width=gw, height=gh, bg=c["card"], highlightthickness=0)
+        g.pack(padx=SP["sm"], pady=SP["sm"])
+
+        peak = max((v for _, v in series), default=1) or 1
+        # Lignes de grille horizontales + labels Y (0, pic/2, pic)
+        for frac in (0.0, 0.5, 1.0):
+            y = MT + ih - frac * ih
+            g.create_line(ML, y, ML + iw, y, fill=c["track"], width=1,
+                          dash=(2, 3) if 0 < frac < 1 else None)
+            lbl = fmt_duration_long(int(peak * frac), lang) if frac > 0 else "0"
+            g.create_text(ML - 6, y, text=lbl, anchor="e", fill=c["muted"], font=(FONT, 8))
+
+        # Barres
+        self._bars = []
+        bw = iw / len(series)
+        accent = ACTIONS[self.app.action.get()]
+        for i, (date, v) in enumerate(series):
+            x = ML + i * bw + bw * 0.15
+            x2 = ML + (i + 1) * bw - bw * 0.15
+            h = (v / peak) * ih if peak else 0
+            y1 = MT + ih - h; y2 = MT + ih
+            if v:
+                g.create_rectangle(x, y1, x2, y2, fill=accent, outline="")
+            self._bars.append((x, y1, x2, y2, date, v))
+
+        # Labels X : -29j, -14j, aujourd'hui
+        for frac, idx in ((0.0, 0), (0.5, len(series) // 2), (1.0, len(series) - 1)):
+            x = ML + frac * iw
+            d = dt.date.fromisoformat(series[idx][0]) if series else dt.date.today()
+            offset = (dt.date.today() - d).days
+            if offset == 0: lbl = ("auj." if lang == "fr" else "today")
+            else: lbl = f"-{offset}j" if lang == "fr" else f"-{offset}d"
+            g.create_text(x, MT + ih + 10, text=lbl, anchor="n", fill=c["muted"], font=(FONT, 8))
+
+        # Tooltip au survol
+        self._chart = g
+        g.bind("<Motion>", self._on_chart_hover)
+        g.bind("<Leave>", lambda e: self._hide_tip())
+
+        # ---- Top apps ----
+        tk.Label(wrap, text="🏆 " + self.app.t["top_apps"], bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["base"], "bold")).pack(anchor="w", pady=(SP["lg"], SP["xs"]))
         top = t.top_apps(5, 7); mx = max((v for _, v in top), default=1) or 1
-        tbox = tk.Frame(wrap, bg=c["bg"]); tbox.pack(fill="x")
-        for name, sec in top:
-            r = tk.Frame(tbox, bg=c["bg"]); r.pack(fill="x", pady=2)
-            tk.Label(r, text=name, bg=c["bg"], fg=c["text"], font=(FONT, 9),
-                     width=24, anchor="w").pack(side="left")
-            bar = tk.Frame(r, bg=c["card"], height=14); bar.pack(side="left", fill="x", expand=True)
-            fill = tk.Frame(bar, bg="#4da3ff", height=14)
-            fill.place(x=0, y=0, relwidth=sec / mx, relheight=1)
-            tk.Label(r, text=fmt_duration_long(sec, lang), bg=c["bg"], fg=c["muted"],
-                     font=(FONT, 9), width=10, anchor="e").pack(side="right")
+        tbox = ctk.CTkFrame(wrap, fg_color=c["card"], corner_radius=RADIUS["lg"],
+                            border_width=1, border_color=c["border"])
+        tbox.pack(fill="x")
         if not top:
             tk.Label(tbox, text="Pas encore de données." if lang == "fr" else "No data yet.",
-                     bg=c["bg"], fg=c["muted"], font=(FONT, 9)).pack(pady=6)
+                     bg=c["card"], fg=c["muted"],
+                     font=(FONT, FS["sm"])).pack(pady=SP["md"])
+        else:
+            for name, sec in top:
+                r = ctk.CTkFrame(tbox, fg_color="transparent")
+                r.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+                tk.Label(r, text=name, bg=c["card"], fg=c["text"],
+                         font=(FONT, FS["sm"]), width=24,
+                         anchor="w").pack(side="left")
+                bar = tk.Frame(r, bg=c["track"], height=14)
+                bar.pack(side="left", fill="x", expand=True, padx=SP["sm"])
+                fill = tk.Frame(bar, bg="#4da3ff", height=14)
+                fill.place(x=0, y=0, relwidth=sec / mx, relheight=1)
+                tk.Label(r, text=fmt_duration_long(sec, lang), bg=c["card"], fg=c["muted"],
+                         font=(FONT, FS["sm"]), width=10, anchor="e").pack(side="right")
 
-        # batterie
+        # ---- Batterie ----
         b = battery_info()
-        tk.Label(wrap, text=self.app.t["battery"], bg=c["bg"], fg=c["muted"],
-                 font=(FONT, 10)).pack(anchor="w", pady=(14, 4))
+        tk.Label(wrap, text="🔋 " + self.app.t["battery"], bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["base"], "bold")).pack(anchor="w", pady=(SP["lg"], SP["xs"]))
+        batt_card = ctk.CTkFrame(wrap, fg_color=c["card"], corner_radius=RADIUS["lg"],
+                                  border_width=1, border_color=c["border"])
+        batt_card.pack(fill="x")
         if b["present"]:
             txt = f"{b['percent']} % — "
             txt += self.app.t["charging"] if b["plugged"] else \
@@ -1557,131 +1622,279 @@ class StatsWindow(tk.Toplevel):
                 txt += f"  ·  ~ {fmt_duration_long(b['autonomy'], lang)}"
         else:
             txt = "PC fixe (pas de batterie détectée)" if lang == "fr" else "No battery detected"
-        tk.Label(wrap, text=txt, bg=c["bg"], fg=c["text"], font=(FONT, 11)).pack(anchor="w")
+        tk.Label(batt_card, text=txt, bg=c["card"], fg=c["text"],
+                 font=(FONT, FS["md"])).pack(anchor="w", padx=SP["md"], pady=SP["md"])
+
+    def _on_chart_hover(self, event):
+        x, y = event.x, event.y
+        for x1, y1, x2, y2, date, sec in self._bars:
+            if x1 <= x <= x2 and y1 <= y <= y2 + 10:
+                lang = self.app.lang
+                try:
+                    d = dt.date.fromisoformat(date)
+                    label = d.strftime("%d/%m" if lang == "fr" else "%m-%d")
+                except Exception:
+                    label = date
+                dur = fmt_duration_long(sec, lang) if sec else ("—")
+                self._show_tip(f"{label} · {dur}", event.x_root, event.y_root)
+                return
+        self._hide_tip()
+
+    def _show_tip(self, text, x, y):
+        c = self.c
+        if not self._tip:
+            self._tip = tk.Toplevel(self); self._tip.overrideredirect(True)
+            self._tip.attributes("-topmost", True)
+            self._tip.configure(bg=c["border"])
+            self._tip_lbl = tk.Label(self._tip, text="", bg=c["card"], fg=c["text"],
+                                      font=(FONT, FS["sm"]), padx=10, pady=4)
+            self._tip_lbl.pack(padx=1, pady=1)
+        self._tip_lbl.configure(text=text)
+        self._tip.geometry(f"+{x + 14}+{y + 14}")
+        self._tip.deiconify()
+
+    def _hide_tip(self):
+        if self._tip:
+            self._tip.withdraw()
 
 
-class SettingsWindow(tk.Toplevel):
+class SettingsWindow(ctk.CTkToplevel):
+    """Fenêtre de paramètres organisée en 4 onglets (CTkTabview) :
+    Apparence · Automatisations · Intégrations · Avancé
+    """
+
     def __init__(self, parent):
         super().__init__(parent); self.app = parent; self.c = parent.theme
-        self.title(parent.t["settings"]); self.configure(bg=self.c["bg"]); self.resizable(False, False)
-        self.transient(parent); self._build()
+        self.title(parent.t["settings"]); self.configure(fg_color=self.c["bg"])
+        self.resizable(False, False); self.transient(parent)
+        self._build()
 
-    def _section(self, parent, title):
+    # ---- Helpers ----
+    def _section_title(self, parent, text):
         c = self.c
-        tk.Label(parent, text=title, bg=c["bg"], fg=c["text"],
-                 font=(FONT, 11, "bold")).pack(anchor="w", pady=(10, 4))
+        tk.Label(parent, text=text, bg=c["card"] if isinstance(parent, ctk.CTkFrame) else c["bg"],
+                 fg=c["text"], font=(FONT, FS["base"], "bold")).pack(
+            anchor="w", pady=(SP["md"], SP["xs"]))
 
-    def _row(self, parent, label):
+    def _group(self, parent):
+        """Groupe visuel = carte arrondie à bordure."""
         c = self.c
-        r = tk.Frame(parent, bg=c["bg"]); r.pack(fill="x", pady=3)
-        tk.Label(r, text=label, bg=c["bg"], fg=c["muted"], font=(FONT, 10),
+        g = ctk.CTkFrame(parent, fg_color=c["card"], corner_radius=RADIUS["md"],
+                         border_width=1, border_color=c["border"])
+        g.pack(fill="x", pady=SP["xs"])
+        return g
+
+    def _row(self, parent, label, bg=None):
+        c = self.c
+        bg = bg or c["bg"]
+        r = ctk.CTkFrame(parent, fg_color="transparent")
+        r.pack(fill="x", pady=SP["xs"], padx=SP["md"] if parent.cget("fg_color") == c["card"] else 0)
+        tk.Label(r, text=label, bg=bg if parent.cget("fg_color") == "transparent" else c["card"],
+                 fg=c["muted"], font=(FONT, FS["sm"]),
                  width=22, anchor="w").pack(side="left")
         return r
 
+    def _mk_switch(self, parent, text, var, cmd):
+        c = self.c
+        accent = ACTIONS[self.app.action.get()]
+        sw = ctk.CTkSwitch(parent, text=text, variable=var, command=cmd,
+                           progress_color=accent, button_color="#ffffff",
+                           button_hover_color="#f0f0f0",
+                           fg_color=c["track"], text_color=c["text"],
+                           font=ctk.CTkFont(FONT, FS["sm"]))
+        return sw
+
+    def _mk_entry(self, parent, var, width=80):
+        c = self.c
+        e = ctk.CTkEntry(parent, textvariable=var, width=width, height=28,
+                         fg_color=c["bg"], text_color=c["text"],
+                         border_color=c["border"], border_width=1,
+                         font=ctk.CTkFont(FONT, FS["sm"]), justify="center")
+        return e
+
+    def _hint(self, parent, text):
+        c = self.c
+        tk.Label(parent, text=text, bg=parent.cget("fg_color") if hasattr(parent, "cget") else c["bg"],
+                 fg=c["muted"], font=(FONT, FS["xs"]),
+                 wraplength=440, justify="left").pack(anchor="w", padx=SP["md"], pady=(0, SP["sm"]))
+
+    # ---- Construction ----
     def _build(self):
+        c = self.c
+        wrap = ctk.CTkFrame(self, fg_color=c["bg"], corner_radius=0)
+        wrap.pack(padx=SP["lg"], pady=SP["lg"])
+
+        tabs = ctk.CTkTabview(wrap, width=500, height=460,
+                              fg_color=c["bg"], segmented_button_fg_color=c["card"],
+                              segmented_button_selected_color=c["track"],
+                              segmented_button_selected_hover_color=c["hover"],
+                              segmented_button_unselected_color=c["card"],
+                              segmented_button_unselected_hover_color=c["hover"],
+                              text_color=c["text"], border_color=c["border"], border_width=1,
+                              corner_radius=RADIUS["md"])
+        tabs.pack()
+        tab_names = ["Apparence", "Automatisations", "Intégrations", "Avancé"]
+        for n in tab_names:
+            tabs.add(n)
+        self._build_tab_appearance(tabs.tab("Apparence"))
+        self._build_tab_automation(tabs.tab("Automatisations"))
+        self._build_tab_integrations(tabs.tab("Intégrations"))
+        self._build_tab_advanced(tabs.tab("Avancé"))
+
+    def _build_tab_appearance(self, tab):
         c = self.c; cfg = self.app.cfg
-        wrap = tk.Frame(self, bg=c["bg"], padx=18, pady=16); wrap.pack(fill="x")
 
-        self._section(wrap, "Apparence")
-        r = self._row(wrap, "Langue / Language")
+        # Langue
+        g = self._group(tab)
+        self._section_title(g, "Langue")
+        r = ctk.CTkFrame(g, fg_color="transparent"); r.pack(fill="x", padx=SP["md"], pady=(0, SP["md"]))
         lv = tk.StringVar(value=cfg["lang"])
-        for code in ("fr", "en"):
-            tk.Radiobutton(r, text=code.upper(), variable=lv, value=code,
-                           bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                           activebackground=c["bg"], activeforeground=c["text"],
-                           font=(FONT, 9), bd=0, highlightthickness=0,
-                           command=lambda v=lv: self._lang(v.get())).pack(side="left", padx=4)
-        r = self._row(wrap, "Thème")
-        tv = tk.StringVar(value=cfg["theme"])
-        for code, label in (("auto", "Auto"), ("dark", "Sombre"), ("light", "Clair")):
-            tk.Radiobutton(r, text=label, variable=tv, value=code,
-                           bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                           activebackground=c["bg"], activeforeground=c["text"],
-                           font=(FONT, 9), bd=0, highlightthickness=0,
-                           command=lambda v=tv: self._theme(v.get())).pack(side="left", padx=4)
+        seg = ctk.CTkSegmentedButton(r, values=["Français", "English"],
+                                      command=lambda v: self._lang("fr" if v.startswith("Fr") else "en"),
+                                      fg_color=c["card"], selected_color=c["track"],
+                                      unselected_color=c["card"], text_color=c["text"],
+                                      corner_radius=RADIUS["sm"], height=32)
+        seg.set("Français" if cfg["lang"] == "fr" else "English")
+        seg.pack(fill="x")
 
-        self._section(wrap, "Notifications")
-        nv = tk.BooleanVar(value=cfg["notify"])
-        tk.Checkbutton(wrap, text="Notifications Windows natives", variable=nv,
-                       command=lambda: self._set("notify", nv.get()),
-                       bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                       activebackground=c["bg"], activeforeground=c["text"],
-                       font=(FONT, 9), bd=0, highlightthickness=0).pack(anchor="w")
+        # Thème
+        g = self._group(tab)
+        self._section_title(g, "Thème")
+        r = ctk.CTkFrame(g, fg_color="transparent"); r.pack(fill="x", padx=SP["md"], pady=(0, SP["md"]))
+        tseg = ctk.CTkSegmentedButton(r, values=["Auto", "Sombre", "Clair"],
+                                       command=lambda v: self._theme(
+                                           {"Auto": "auto", "Sombre": "dark", "Clair": "light"}[v]),
+                                       fg_color=c["card"], selected_color=c["track"],
+                                       unselected_color=c["card"], text_color=c["text"],
+                                       corner_radius=RADIUS["sm"], height=32)
+        tseg.set({"auto": "Auto", "dark": "Sombre", "light": "Clair"}[cfg["theme"]])
+        tseg.pack(fill="x")
+        self._hint(g, "La bascule nécessite un redémarrage de l'application.")
 
-        self._section(wrap, "Sécurité")
+    def _build_tab_automation(self, tab):
+        c = self.c; cfg = self.app.cfg
+
+        # Sécurité (confirmations)
+        g = self._group(tab)
+        self._section_title(g, "🛡  Sécurité")
         cv = tk.BooleanVar(value=cfg.get("confirm_destructive", True))
-        tk.Checkbutton(wrap,
-                       text="Demander confirmation avant Éteindre / Redémarrer / Hibernation",
-                       variable=cv, command=lambda: self._set("confirm_destructive", cv.get()),
-                       bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                       activebackground=c["bg"], activeforeground=c["text"],
-                       font=(FONT, 9), bd=0, highlightthickness=0,
-                       wraplength=460, justify="left").pack(anchor="w")
-        tr = self._row(wrap, "  Seuil de rappel (sec)")
+        self._mk_switch(g, "Confirmation avant Éteindre / Redémarrer / Hibernation",
+                        cv, lambda: self._set("confirm_destructive", cv.get())).pack(
+            anchor="w", padx=SP["md"], pady=SP["xs"])
+        r = ctk.CTkFrame(g, fg_color="transparent"); r.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+        tk.Label(r, text="Seuil de confirmation", bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["sm"]), width=22, anchor="w").pack(side="left")
         tv2 = tk.StringVar(value=str(cfg.get("confirm_threshold_sec", 120)))
-        tk.Entry(tr, textvariable=tv2, width=6, bg=c["card"], fg=c["text"], relief="flat",
-                 insertbackground=c["text"], font=(FONT, 10), justify="center").pack(side="left", padx=4, ipady=3)
+        self._mk_entry(r, tv2, width=70).pack(side="left")
+        tk.Label(r, text="secondes", bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["xs"])).pack(side="left", padx=SP["xs"])
         tv2.trace_add("write",
                       lambda *_: self._set("confirm_threshold_sec", to_int(tv2.get(), 120)))
-        tk.Label(wrap,
-                 text="En dessous de ce seuil, confirmation demandée même pour Veille / Verrouiller si l'action est destructive.",
-                 bg=c["bg"], fg=c["muted"], font=(FONT, 8),
-                 wraplength=460, justify="left").pack(anchor="w", pady=(2, 0))
+        self._hint(g, "En dessous de ce seuil, les actions destructives demandent toujours confirmation.")
 
-        self._section(wrap, "Récurrence quotidienne")
+        # Notifications
+        g = self._group(tab)
+        self._section_title(g, "🔔  Notifications")
+        nv = tk.BooleanVar(value=cfg["notify"])
+        self._mk_switch(g, "Notifications Windows natives (à 1 min de la fin)",
+                        nv, lambda: self._set("notify", nv.get())).pack(
+            anchor="w", padx=SP["md"], pady=(SP["xs"], SP["md"]))
+
+        # Récurrence
+        g = self._group(tab)
+        self._section_title(g, "⏰  Récurrence quotidienne")
         rv = tk.BooleanVar(value=cfg["recurrent_enabled"])
-        tk.Checkbutton(wrap, text="Chaque jour, si inactif depuis N min →",
-                       variable=rv, command=lambda: self._set("recurrent_enabled", rv.get()),
-                       bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                       activebackground=c["bg"], activeforeground=c["text"],
-                       font=(FONT, 9), bd=0, highlightthickness=0).pack(anchor="w")
-        rr = tk.Frame(wrap, bg=c["bg"]); rr.pack(fill="x", pady=4)
-        tk.Label(rr, text="  Heure", bg=c["bg"], fg=c["muted"], font=(FONT, 9)).pack(side="left")
+        self._mk_switch(g, "Lancer l'action chaque jour si le PC est inactif",
+                        rv, lambda: self._set("recurrent_enabled", rv.get())).pack(
+            anchor="w", padx=SP["md"], pady=SP["xs"])
+        r = ctk.CTkFrame(g, fg_color="transparent"); r.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+        tk.Label(r, text="Heure", bg=c["card"], fg=c["muted"], font=(FONT, FS["sm"]),
+                 width=10, anchor="w").pack(side="left")
         hv = tk.StringVar(value=cfg["recurrent_time"])
-        e = tk.Entry(rr, textvariable=hv, width=6, bg=c["card"], fg=c["text"], relief="flat",
-                     insertbackground=c["text"], font=(FONT, 10), justify="center")
-        e.pack(side="left", padx=4, ipady=3)
+        self._mk_entry(r, hv, width=70).pack(side="left")
         hv.trace_add("write", lambda *_: self._set("recurrent_time", hv.get()))
-        tk.Label(rr, text="  Inactif min", bg=c["bg"], fg=c["muted"], font=(FONT, 9)).pack(side="left")
+        tk.Label(r, text="  Inactif ≥", bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["sm"])).pack(side="left", padx=(SP["md"], 0))
         iv = tk.StringVar(value=str(cfg["recurrent_idle_min"]))
-        tk.Entry(rr, textvariable=iv, width=4, bg=c["card"], fg=c["text"], relief="flat",
-                 insertbackground=c["text"], font=(FONT, 10), justify="center").pack(side="left", padx=4, ipady=3)
+        self._mk_entry(r, iv, width=50).pack(side="left", padx=SP["xs"])
+        tk.Label(r, text="min", bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["sm"])).pack(side="left")
         iv.trace_add("write", lambda *_: self._set("recurrent_idle_min", to_int(iv.get(), 15)))
-        tk.Label(rr, text="  Action", bg=c["bg"], fg=c["muted"], font=(FONT, 9)).pack(side="left")
+
+        r2 = ctk.CTkFrame(g, fg_color="transparent"); r2.pack(fill="x", padx=SP["md"], pady=(SP["xs"], SP["md"]))
+        tk.Label(r2, text="Action", bg=c["card"], fg=c["muted"], font=(FONT, FS["sm"]),
+                 width=10, anchor="w").pack(side="left")
         av = tk.StringVar(value=cfg["recurrent_action"])
-        cb = ttk.Combobox(rr, textvariable=av, values=list(ACTIONS.keys()),
-                          state="readonly", width=12, style="Dark.TCombobox")
-        cb.pack(side="left", padx=4)
-        av.trace_add("write", lambda *_: self._set("recurrent_action", av.get()))
+        action_labels = [self.app._act_key2label[k] for k in ACTIONS]
+        current = self.app._act_key2label.get(cfg["recurrent_action"], action_labels[0])
+        menu = ctk.CTkOptionMenu(r2, values=action_labels,
+                                  command=lambda v: self._set("recurrent_action",
+                                                               self.app._act_label2key.get(v, v)),
+                                  fg_color=c["bg"], button_color=c["bg"],
+                                  button_hover_color=c["hover"], text_color=c["text"],
+                                  dropdown_fg_color=c["card"], dropdown_hover_color=c["hover"],
+                                  dropdown_text_color=c["text"],
+                                  corner_radius=RADIUS["sm"], width=140, height=28)
+        menu.set(current); menu.pack(side="left")
 
-        self._section(wrap, "Webhook (Discord / Slack)")
+    def _build_tab_integrations(self, tab):
+        c = self.c; cfg = self.app.cfg
+
+        # Webhook
+        g = self._group(tab)
+        self._section_title(g, "💬  Webhook (Discord / Slack)")
         wv = tk.StringVar(value=cfg["webhook"])
-        tk.Entry(wrap, textvariable=wv, bg=c["card"], fg=c["text"], relief="flat",
-                 insertbackground=c["text"], font=(FONT, 9)).pack(fill="x", ipady=5)
+        self._mk_entry(g, wv, width=440).pack(fill="x", padx=SP["md"], pady=SP["xs"])
         wv.trace_add("write", lambda *_: self._set("webhook", wv.get().strip()))
-        tk.Label(wrap, text="URL postée après chaque action (vide = désactivé).",
-                 bg=c["bg"], fg=c["muted"], font=(FONT, 8)).pack(anchor="w", pady=(2, 0))
+        self._hint(g, "URL de webhook postée après chaque action (vide = désactivé).")
 
-        self._section(wrap, "API REST locale (contrôle depuis le téléphone)")
+        # API REST
+        g = self._group(tab)
+        self._section_title(g, "📱  API REST locale")
         av2 = tk.BooleanVar(value=cfg["api_enabled"])
-        tk.Checkbutton(wrap, text=f"Serveur HTTP activé (port {cfg['api_port']})",
-                       variable=av2, command=lambda: self._api(av2.get()),
-                       bg=c["bg"], fg=c["text"], selectcolor=c["card"],
-                       activebackground=c["bg"], activeforeground=c["text"],
-                       font=(FONT, 9), bd=0, highlightthickness=0).pack(anchor="w")
+        self._mk_switch(g, f"Serveur HTTP activé (port {cfg['api_port']})",
+                        av2, lambda: self._api(av2.get())).pack(
+            anchor="w", padx=SP["md"], pady=SP["xs"])
+        self._hint(g, "Contrôle le PC depuis le téléphone ou un script via l'URL ci-dessous :")
         ip = lan_ip()
         url = f"http://{ip}:{cfg['api_port']}/action?a=shutdown&in=1800&token={cfg['api_token']}"
-        tk.Label(wrap, text="Exemple :", bg=c["bg"], fg=c["muted"],
-                 font=(FONT, 8)).pack(anchor="w", pady=(4, 0))
-        urlbox = tk.Entry(wrap, bg=c["card"], fg=c["text"], relief="flat",
-                          font=(FONT, 8), readonlybackground=c["card"])
+        urlbox = ctk.CTkEntry(g, height=30, fg_color=c["bg"], text_color=c["text"],
+                               border_color=c["border"], border_width=1,
+                               font=ctk.CTkFont(FONT, FS["xs"]))
         urlbox.insert(0, url); urlbox.configure(state="readonly")
-        urlbox.pack(fill="x", ipady=4, pady=2)
-        tk.Label(wrap,
-                 text="Actions : shutdown · restart · sleep · hibernate · lock · cancel  |  in=sec (défaut 1)",
-                 bg=c["bg"], fg=c["muted"], font=(FONT, 8), wraplength=460,
-                 justify="left").pack(anchor="w")
+        urlbox.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+        self._hint(g, "Actions : shutdown · restart · sleep · hibernate · lock · cancel  "
+                      "|  in=secondes (défaut 1)")
 
+    def _build_tab_advanced(self, tab):
+        c = self.c; cfg = self.app.cfg
+        g = self._group(tab)
+        self._section_title(g, "ℹ  À propos")
+        info = (f"Version : v3  ·  Python : {platform.python_version()}\n"
+                f"Config : {CFG_PATH}\n"
+                f"Statistiques : {USAGE_PATH}\n"
+                f"Profils : {PROFILES_PATH}")
+        tk.Label(g, text=info, bg=c["card"], fg=c["muted"],
+                 font=(FONT, FS["xs"]), justify="left").pack(
+            anchor="w", padx=SP["md"], pady=(0, SP["md"]))
+
+        g = self._group(tab)
+        self._section_title(g, "🪪  Jeton API")
+        tv = tk.StringVar(value=cfg.get("api_token", ""))
+        tbox = ctk.CTkEntry(g, textvariable=tv, height=30, fg_color=c["bg"], text_color=c["text"],
+                             border_color=c["border"], border_width=1,
+                             font=ctk.CTkFont(FONT, FS["xs"]))
+        tbox.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+        tbox.configure(state="readonly")
+
+        r = ctk.CTkFrame(g, fg_color="transparent"); r.pack(fill="x", padx=SP["md"], pady=(0, SP["md"]))
+        ctk.CTkButton(r, text="Régénérer le jeton", command=self._regen_token,
+                       fg_color=c["bg"], hover_color=c["hover"], text_color=c["text"],
+                       border_color=c["border"], border_width=1,
+                       font=ctk.CTkFont(FONT, FS["sm"]), height=32,
+                       corner_radius=RADIUS["sm"]).pack(side="left")
+
+    # ---- Callbacks ----
     def _set(self, k, v):
         self.app.cfg[k] = v; save_json(CFG_PATH, self.app.cfg)
 
@@ -1698,6 +1911,16 @@ class SettingsWindow(tk.Toplevel):
         self._set("api_enabled", enabled)
         if enabled: self.app._start_api()
         else: self.app._stop_api()
+
+    def _regen_token(self):
+        if not messagebox.askyesno("Régénérer le jeton",
+                                     "Les anciennes URL ne fonctionneront plus. Continuer ?"):
+            return
+        self._set("api_token", secrets.token_urlsafe(12))
+        if self.app.api_server:
+            self.app._stop_api(); self.app._start_api()
+        messagebox.showinfo("Jeton API", "Nouveau jeton généré. Rouvre les Paramètres pour voir la nouvelle URL.")
+        self.destroy()
 
 
 class ProfilesWindow(tk.Toplevel):

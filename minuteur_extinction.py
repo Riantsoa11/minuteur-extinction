@@ -630,6 +630,10 @@ class App(ctk.CTk):
         self.attributes("-topmost", self.pin.get())
         self.bind("<Return>", lambda e: self._start() if self.state_ == "idle" else None)
         self.bind("<Escape>", lambda e: self._cancel())
+        self.bind("<Control-comma>", lambda e: self.open_settings())
+        self.bind("<Control-k>", lambda e: self.toggle_compact())
+        self.bind("<Control-K>", lambda e: self.toggle_compact())
+        self.bind("<F1>", lambda e: self._open_shortcuts())
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._set_mode(self.mode.get(), save=False)
@@ -644,7 +648,9 @@ class App(ctk.CTk):
     def _style(self):
         """Configure les styles ttk legacy (Combobox) et les options Tk globales."""
         c = self.theme
-        st = ttk.Style(self); st.theme_use("clam")
+        st = ttk.Style(self)
+        try: st.theme_use("clam")
+        except tk.TclError: pass
         st.configure("Dark.TCombobox", fieldbackground=c["card"], background=c["card"],
                      foreground=c["text"], arrowcolor=c["text"], bordercolor=c["border"],
                      lightcolor=c["card"], darkcolor=c["card"], selectbackground=c["card"],
@@ -654,6 +660,37 @@ class App(ctk.CTk):
         self.option_add("*TCombobox*Listbox.background", c["card"])
         self.option_add("*TCombobox*Listbox.foreground", c["text"])
         self.option_add("*TCombobox*Listbox.selectBackground", c["track"])
+
+    def apply_theme(self, new_pref):
+        """Bascule le thème à chaud sans redémarrer l'application.
+        new_pref ∈ {"auto", "dark", "light"}.
+        """
+        self.cfg["theme"] = new_pref; save_json(CFG_PATH, self.cfg)
+        is_dark = (new_pref == "auto" and detect_system_dark()) or new_pref == "dark"
+        ctk.set_appearance_mode("dark" if is_dark else "light")
+        self.theme = THEMES["dark" if is_dark else "light"]
+        self.configure(fg_color=self.theme["bg"])
+        self._style()
+        # Rebuild complet de la hiérarchie principale
+        self._build()
+        # Re-sync visuel : mode, action, verrou idle
+        self._set_mode(self.mode.get(), save=False)
+        self._set_action(self.action.get(), save=False)
+        self._refresh_idle()
+
+    def _validate_input(self, var, max_v, widget):
+        """Marque le widget en rouge si la valeur est hors plage [0, max_v]."""
+        c = self.theme
+        try:
+            v = int(str(var.get()).strip() or "0")
+            ok = 0 <= v <= max_v
+        except (ValueError, TypeError):
+            ok = False
+        try:
+            widget.configure(
+                highlightbackground=c["border"] if ok else "#ff5c7a",
+                highlightcolor=c["border"] if ok else "#ff5c7a")
+        except Exception: pass
 
     def _pill(self, parent, text, cmd=None, bg=None, fg=None, size=10, bold=False,
               padx=12, pady=6, hover=True):
@@ -685,7 +722,11 @@ class App(ctk.CTk):
                         relief="flat", insertbackground=c["text"], wrap=True, highlightthickness=1,
                         highlightbackground=c["border"], highlightcolor=c["border"],
                         disabledbackground=c["card"], disabledforeground=c["muted"])
-        self.inputs.append(sp); return sp
+        self.inputs.append(sp)
+        # Enregistre la trace de validation (une seule par var)
+        tok = f"_val_{id(sp)}"
+        var.trace_add("write", lambda *_, v=var, m=to, w=sp: self._validate_input(v, m, w))
+        return sp
 
     def _label(self, parent, text, size=10, muted=True, **kw):
         c = self.theme
@@ -727,6 +768,7 @@ class App(ctk.CTk):
         self.pin_btn = self._icon_btn(actions_bar, "📌", self._toggle_pin, active=self.pin.get())
         self.pin_btn.pack(side="left", padx=SP["xs"])
         self._icon_btn(actions_bar, "🗗", self.toggle_compact).pack(side="left", padx=SP["xs"])
+        self._icon_btn(actions_bar, "?", self._open_shortcuts).pack(side="left", padx=SP["xs"])
         self._icon_btn(actions_bar, "☰", self._open_menu).pack(side="left", padx=SP["xs"])
 
         # ---- 2. Carte d'action primaire ----
@@ -1008,6 +1050,44 @@ class App(ctk.CTk):
         c = self.theme
         self.pin_btn.configure(fg_color=c["track"] if self.pin.get() else c["card"])
 
+    def _open_shortcuts(self):
+        """Affiche un overlay listant les raccourcis clavier."""
+        c = self.theme
+        dlg = ctk.CTkToplevel(self); dlg.title("Raccourcis" if self.lang == "fr" else "Shortcuts")
+        dlg.configure(fg_color=c["bg"]); dlg.resizable(False, False)
+        dlg.transient(self); dlg.grab_set()
+        wrap = ctk.CTkFrame(dlg, fg_color=c["bg"], corner_radius=0)
+        wrap.pack(padx=SP["xl"], pady=SP["lg"])
+        tk.Label(wrap, text=("⌨  Raccourcis clavier" if self.lang == "fr"
+                             else "⌨  Keyboard shortcuts"),
+                 bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["lg"], "bold")).pack(anchor="w", pady=(0, SP["md"]))
+        shortcuts = [
+            ("Entrée / Enter", "Démarrer l'action" if self.lang == "fr" else "Start action"),
+            ("Échap / Esc", "Annuler" if self.lang == "fr" else "Cancel"),
+            ("Tab", "Naviguer entre les champs" if self.lang == "fr" else "Navigate fields"),
+            ("Ctrl + ,", "Ouvrir les paramètres" if self.lang == "fr" else "Open settings"),
+            ("Ctrl + K", "Mode compact" if self.lang == "fr" else "Toggle compact"),
+        ]
+        card = ctk.CTkFrame(wrap, fg_color=c["card"], corner_radius=RADIUS["md"],
+                             border_width=1, border_color=c["border"])
+        card.pack(fill="x")
+        for k, v in shortcuts:
+            r = ctk.CTkFrame(card, fg_color="transparent")
+            r.pack(fill="x", padx=SP["md"], pady=SP["xs"])
+            # Chip pour la touche
+            kchip = tk.Label(r, text=k, bg=c["track"], fg=c["text"],
+                              font=(FONT, FS["sm"], "bold"), padx=10, pady=3)
+            kchip.pack(side="left")
+            tk.Label(r, text=v, bg=c["card"], fg=c["muted"],
+                     font=(FONT, FS["sm"])).pack(side="left", padx=SP["md"])
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        # Centrage
+        dlg.update_idletasks()
+        px = self.winfo_rootx() + self.winfo_width() // 2 - dlg.winfo_width() // 2
+        py = self.winfo_rooty() + self.winfo_height() // 2 - dlg.winfo_height() // 2
+        dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
+
     def _open_menu(self):
         """Menu contextuel regroupant Stats / Profils / Paramètres."""
         c = self.theme
@@ -1024,7 +1104,42 @@ class App(ctk.CTk):
             m.grab_release()
 
     def _refresh_procs(self):
-        try: self.combo["values"] = list_processes()
+        """Charge la liste des processus en arrière-plan avec feedback visuel."""
+        if not hasattr(self, "combo"): return
+        # Feedback immédiat
+        try:
+            self.combo.configure(state="disabled")
+            self._proc_loading = True
+            self._refresh_procs_spinner()
+        except Exception: pass
+
+        def worker():
+            procs = []
+            try: procs = list_processes()
+            except Exception: pass
+            # Retour sur le thread UI
+            self.after(0, lambda: self._refresh_procs_done(procs))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_procs_spinner(self):
+        """Fait tourner un petit indicateur dans le combobox pendant le load."""
+        if not getattr(self, "_proc_loading", False): return
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._proc_spin_i = (getattr(self, "_proc_spin_i", 0) + 1) % len(frames)
+        try:
+            self.combo.set(f"{frames[self._proc_spin_i]} " +
+                            ("Chargement…" if self.lang == "fr" else "Loading…"))
+        except Exception: pass
+        self.after(80, self._refresh_procs_spinner)
+
+    def _refresh_procs_done(self, procs):
+        self._proc_loading = False
+        try:
+            self.combo["values"] = procs
+            self.combo.set(self.proc.get() or "")
+            if self.state_ == "idle":
+                self.combo.configure(state="normal")
         except Exception: pass
 
     def _save(self):
@@ -1904,8 +2019,13 @@ class SettingsWindow(ctk.CTkToplevel):
         messagebox.showinfo("Langue", "Relance l'application pour appliquer la langue.")
 
     def _theme(self, v):
-        self._set("theme", v)
-        messagebox.showinfo("Thème", "Relance l'application pour appliquer le thème.")
+        """Bascule à chaud via App.apply_theme — plus de redémarrage requis."""
+        if v == self.app.cfg.get("theme"): return
+        self.app.apply_theme(v)
+        self.c = self.app.theme  # sync la ref locale pour les widgets dans Settings
+        # On ne reconstruit pas Settings à chaud : fermer+rouvrir suffira pour voir le neuf.
+        try: self.destroy()
+        except Exception: pass
 
     def _api(self, enabled):
         self._set("api_enabled", enabled)

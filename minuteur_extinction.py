@@ -1554,19 +1554,81 @@ class App(ctk.CTk):
 
     # ========= FENÊTRES SECONDAIRES =========
     def toggle_compact(self):
-        """Mode compact : ne garde que l'anneau + bouton primaire + récap."""
+        """Mode compact : fenêtre sans décoration réduite à l'anneau + bouton.
+        Drag-to-move sur l'anneau. Double-clic sur l'anneau pour revenir en plein.
+        """
         self.compact = not self.compact
-        keep = {self.canvas, self.main_btn, self.recap_lbl, self.extend_row}
+        if self.compact:
+            self._enter_compact()
+        else:
+            self._exit_compact()
+
+    def _enter_compact(self):
+        """Passage en mode compact."""
+        # Mémorise la géométrie actuelle pour pouvoir restaurer
+        self._pre_compact_geom = self.geometry()
+        # Masque tout sauf anneau, bouton principal, bannière de grâce, extend
+        keep = {self.canvas, self.main_btn, self.extend_row, self.grace_banner}
         for w in self.root_fr.winfo_children():
-            if w in keep:
-                continue
-            if self.compact:
-                w.pack_forget()
-            else:
-                # Repack dans l'ordre : rebuild complet est plus fiable
-                pass
-        if not self.compact:
-            self._build()
+            if w not in keep:
+                try: w.pack_forget()
+                except Exception: pass
+        # Retire les décorations (barre de titre)
+        try:
+            self.overrideredirect(True)
+            self.attributes("-topmost", True)  # Flotte au-dessus en compact
+        except Exception: pass
+        # Resize serré autour de l'anneau
+        self.update_idletasks()
+        self.geometry("")  # Laisse Tk calculer la taille minimale
+        # Drag-to-move sur l'anneau + double-clic pour sortir
+        self.canvas.bind("<ButtonPress-1>", self._drag_start)
+        self.canvas.bind("<B1-Motion>", self._drag_move)
+        self.canvas.bind("<Double-Button-1>", lambda e: self.toggle_compact())
+        # Petit indicateur discret dans l'anneau : "double-clic pour agrandir"
+        self._compact_hint_id = self.canvas.create_text(
+            self.RING / 2, self.RING - 18,
+            text=("double-clic pour agrandir" if self.lang == "fr"
+                  else "double-click to expand"),
+            fill=self.theme["muted"], font=(FONT, FS["xs"], "italic"))
+
+    def _exit_compact(self):
+        """Retour au mode plein."""
+        # Rétablit les décorations avant quoi que ce soit (sinon rebuild dans un état bâtard)
+        try:
+            self.overrideredirect(False)
+            self.attributes("-topmost", self.pin.get())
+        except Exception: pass
+        # Débind les drags
+        try:
+            self.canvas.unbind("<ButtonPress-1>")
+            self.canvas.unbind("<B1-Motion>")
+            self.canvas.unbind("<Double-Button-1>")
+        except Exception: pass
+        # Rebuild complet (le hint disparaît avec l'ancien canvas)
+        self._build()
+        self._set_mode(self.mode.get(), save=False)
+        self._set_action(self.action.get(), save=False)
+        self._refresh_idle()
+        # Restaure la géométrie précédente (position)
+        try:
+            if hasattr(self, "_pre_compact_geom") and self._pre_compact_geom:
+                # Garde seulement la position (+X+Y), laisse Tk décider de la taille
+                geom = self._pre_compact_geom
+                if "+" in geom:
+                    pos = "+" + "+".join(geom.split("+")[1:])
+                    self.geometry(pos)
+        except Exception: pass
+
+    def _drag_start(self, event):
+        self._drag_dx = event.x_root - self.winfo_x()
+        self._drag_dy = event.y_root - self.winfo_y()
+
+    def _drag_move(self, event):
+        if not hasattr(self, "_drag_dx"): return
+        x = event.x_root - self._drag_dx
+        y = event.y_root - self._drag_dy
+        self.geometry(f"+{x}+{y}")
 
     def open_stats(self):
         StatsWindow(self)

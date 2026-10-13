@@ -34,6 +34,11 @@ import urllib.request
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 try:
+    import customtkinter as ctk
+except ImportError:
+    print("customtkinter manquant : pip install customtkinter", file=sys.stderr)
+    raise
+try:
     import psutil
 except ImportError:
     psutil = None
@@ -56,12 +61,23 @@ PROFILES_PATH = os.path.join(APP_DIR, "profiles.json")
 GRACE = 60
 
 # ========= THÈMES =========
+# Tokens de design : couleurs + espacements + typo
 THEMES = {
     "dark":  {"bg": "#0f1117", "card": "#181b24", "track": "#262a36",
-              "text": "#e8eaf0", "muted": "#8a90a2", "warn": "#ffb547"},
+              "border": "#2a2f3d", "hover": "#20242f",
+              "text": "#e8eaf0", "muted": "#8a90a2", "warn": "#ffb547",
+              "accent_soft": "#1f2330"},
     "light": {"bg": "#f4f5f8", "card": "#ffffff", "track": "#e4e7ed",
-              "text": "#1a1d26", "muted": "#6b7180", "warn": "#d58000"},
+              "border": "#d9dde4", "hover": "#eef0f4",
+              "text": "#1a1d26", "muted": "#6b7180", "warn": "#d58000",
+              "accent_soft": "#eef1f6"},
 }
+# Échelle d'espacement (en pixels)
+SP = {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 32}
+# Échelle typo
+FS = {"xs": 9, "sm": 10, "base": 11, "md": 13, "lg": 15, "xl": 20, "display": 32}
+# Rayons
+RADIUS = {"sm": 6, "md": 10, "lg": 14, "pill": 999}
 ACTIONS = {
     "Éteindre": "#ff5c7a", "Redémarrer": "#4da3ff", "Veille": "#b48cff",
     "Hibernation": "#39d0b3", "Verrouiller": "#8fd16a",
@@ -463,20 +479,30 @@ def lan_ip():
 
 
 # ========= APPLICATION =========
-class App(tk.Tk):
+class App(ctk.CTk):
     RING = 240
 
     def __init__(self, args):
+        # Appearance CTk doit être défini avant super().__init__()
+        is_dark = (load_json(CFG_PATH, DEFAULT_CFG).get("theme") == "auto" and detect_system_dark()) \
+                  or load_json(CFG_PATH, DEFAULT_CFG).get("theme") == "dark"
+        ctk.set_appearance_mode("dark" if is_dark else "light")
+        ctk.set_default_color_theme("blue")
         super().__init__()
         self.cfg = load_json(CFG_PATH, DEFAULT_CFG)
         if not self.cfg.get("api_token"):
             self.cfg["api_token"] = secrets.token_urlsafe(12); save_json(CFG_PATH, self.cfg)
         self.profiles = load_json(PROFILES_PATH, [])
         self.lang = self.cfg["lang"]; self.t = I18N[self.lang]
-        self.theme = THEMES["dark" if (self.cfg["theme"] == "auto" and detect_system_dark())
-                            or self.cfg["theme"] == "dark" else "light"]
-        self.title(self.t["title"]); self.configure(bg=self.theme["bg"])
+        self.theme = THEMES["dark" if is_dark else "light"]
+        self.title(self.t["title"]); self.configure(fg_color=self.theme["bg"])
         self.resizable(False, False)
+        # Mapping label traduit → clé interne (actions et modes)
+        self._act_label2key = dict(zip(self.t["actions"], list(ACTIONS.keys())))
+        self._act_key2label = {v: k for k, v in self._act_label2key.items()}
+        self._mode_label2key = dict(zip(self.t["modes"],
+                                         ["Minuteur", "Heure fixe", "Processus", "Réseau", "Scénario"]))
+        self._mode_key2label = {v: k for k, v in self._mode_label2key.items()}
         try:
             base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
             self.iconbitmap(os.path.join(base, "power.ico"))
@@ -532,10 +558,11 @@ class App(tk.Tk):
 
     # ========= UTILITAIRES UI =========
     def _style(self):
+        """Configure les styles ttk legacy (Combobox) et les options Tk globales."""
         c = self.theme
         st = ttk.Style(self); st.theme_use("clam")
         st.configure("Dark.TCombobox", fieldbackground=c["card"], background=c["card"],
-                     foreground=c["text"], arrowcolor=c["text"], bordercolor=c["card"],
+                     foreground=c["text"], arrowcolor=c["text"], bordercolor=c["border"],
                      lightcolor=c["card"], darkcolor=c["card"], selectbackground=c["card"],
                      selectforeground=c["text"], padding=6)
         st.map("Dark.TCombobox", fieldbackground=[("readonly", c["card"]), ("disabled", c["card"])],
@@ -546,95 +573,161 @@ class App(tk.Tk):
 
     def _pill(self, parent, text, cmd=None, bg=None, fg=None, size=10, bold=False,
               padx=12, pady=6, hover=True):
+        """Pill en tk.Label — conservé pour compat (étapes de scénario, boutons +5/+15/+1h)."""
         c = self.theme
         bg = bg or c["card"]; fg = fg or c["text"]
         b = tk.Label(parent, text=text, bg=bg, fg=fg, font=(FONT, size, "bold" if bold else "normal"),
                      padx=padx, pady=pady, cursor="hand2")
         if cmd: b.bind("<Button-1>", lambda e: cmd())
         if hover:
-            def over(e, w=b, base=bg): w.configure(bg=c["track"] if base == c["card"] else base)
+            def over(e, w=b, base=bg): w.configure(bg=c["hover"] if base == c["card"] else base)
             def out(e, w=b, base=bg): w.configure(bg=base)
             b.bind("<Enter>", over); b.bind("<Leave>", out)
         return b
 
+    def _icon_btn(self, parent, char, cmd, tooltip="", active=False):
+        """Petit bouton icône carré 32x32 pour la barre de titre (pin, compact, menu)."""
+        c = self.theme
+        b = ctk.CTkButton(parent, text=char, width=32, height=32, corner_radius=RADIUS["md"],
+                          fg_color=c["card"] if not active else c["track"],
+                          hover_color=c["hover"], text_color=c["text"],
+                          font=ctk.CTkFont(FONT, FS["md"]), command=cmd)
+        return b
+
     def _spin(self, parent, var, to, width=3):
         c = self.theme
-        sp = tk.Spinbox(parent, from_=0, to=to, textvariable=var, width=width, font=(FONT, 14, "bold"),
+        sp = tk.Spinbox(parent, from_=0, to=to, textvariable=var, width=width, font=(FONT, 18, "bold"),
                         justify="center", bg=c["card"], fg=c["text"], buttonbackground=c["card"],
-                        relief="flat", insertbackground=c["text"], wrap=True, highlightthickness=0,
+                        relief="flat", insertbackground=c["text"], wrap=True, highlightthickness=1,
+                        highlightbackground=c["border"], highlightcolor=c["border"],
                         disabledbackground=c["card"], disabledforeground=c["muted"])
         self.inputs.append(sp); return sp
 
     def _label(self, parent, text, size=10, muted=True, **kw):
         c = self.theme
-        return tk.Label(parent, text=text, bg=c["bg"],
+        bg = kw.pop("bg", c["bg"])
+        return tk.Label(parent, text=text, bg=bg,
                         fg=c["muted"] if muted else c["text"], font=(FONT, size), **kw)
+
+    def _card_frame(self, parent, **kw):
+        """Carte arrondie CTkFrame avec padding interne."""
+        c = self.theme
+        f = ctk.CTkFrame(parent, fg_color=c["card"], corner_radius=RADIUS["lg"],
+                         border_width=1, border_color=c["border"], **kw)
+        return f
 
     # ========= CONSTRUCTION UI =========
     def _build(self):
+        """Hiérarchie :
+          1. Barre de titre mince (titre + icônes pin/compact/menu)
+          2. Carte d'action primaire : « Je veux [Action ▾] »
+          3. Sélecteur de mode (SegmentedButton)
+          4. Panneau du mode (contenu dynamique)
+          5. Anneau de progression + options (force)
+          6. Récapitulatif « → à telle heure »
+          7. Bouton primaire Démarrer
+        """
         c = self.theme
-        self.root_fr = tk.Frame(self, bg=c["bg"], padx=22, pady=16)
-        self.root_fr.pack()
+        # Nettoyage si _build() est rappelé (ex. sortie de compact)
+        if hasattr(self, "root_fr") and self.root_fr.winfo_exists():
+            self.root_fr.destroy()
+        self.inputs = []
+        self.root_fr = ctk.CTkFrame(self, fg_color=c["bg"], corner_radius=0)
+        self.root_fr.pack(padx=SP["xl"], pady=SP["lg"])
 
-        head = tk.Frame(self.root_fr, bg=c["bg"]); head.pack(fill="x")
-        tk.Label(head, text=self.t["title"], bg=c["bg"], fg=c["text"],
-                 font=(FONT, 15, "bold")).pack(side="left")
-        btns = tk.Frame(head, bg=c["bg"]); btns.pack(side="right")
-        for lbl, cmd in [(self.t["stats"], self.open_stats),
-                         (self.t["profiles"], self.open_profiles),
-                         (self.t["settings"], self.open_settings),
-                         (self.t["compact"], self.toggle_compact),
-                         (self.t["pin"], self._toggle_pin)]:
-            b = self._pill(btns, lbl, cmd, size=8, padx=8, pady=3)
-            b.pack(side="left", padx=2)
-            if lbl == self.t["pin"]:
-                self.pin_btn = b
+        # ---- 1. Barre de titre ----
+        head = ctk.CTkFrame(self.root_fr, fg_color="transparent"); head.pack(fill="x")
+        tk.Label(head, text="⚡ " + self.t["title"], bg=c["bg"], fg=c["text"],
+                 font=(FONT, FS["lg"], "bold")).pack(side="left")
+        actions_bar = ctk.CTkFrame(head, fg_color="transparent"); actions_bar.pack(side="right")
+        self.pin_btn = self._icon_btn(actions_bar, "📌", self._toggle_pin, active=self.pin.get())
+        self.pin_btn.pack(side="left", padx=SP["xs"])
+        self._icon_btn(actions_bar, "🗗", self.toggle_compact).pack(side="left", padx=SP["xs"])
+        self._icon_btn(actions_bar, "☰", self._open_menu).pack(side="left", padx=SP["xs"])
 
-        tabs = tk.Frame(self.root_fr, bg=c["card"]); tabs.pack(fill="x", pady=(12, 0))
+        # ---- 2. Carte d'action primaire ----
+        act_card = self._card_frame(self.root_fr)
+        act_card.pack(fill="x", pady=(SP["md"], 0))
+        inner = ctk.CTkFrame(act_card, fg_color="transparent")
+        inner.pack(padx=SP["lg"], pady=SP["md"], fill="x")
+        tk.Label(inner, text=("Je veux" if self.lang == "fr" else "I want to"),
+                 bg=c["card"], fg=c["muted"], font=(FONT, FS["sm"])).pack(side="left")
+        current_label = self._act_key2label[self.action.get()]
+        self.action_menu = ctk.CTkOptionMenu(
+            inner, values=self.t["actions"], command=self._on_action_change,
+            font=ctk.CTkFont(FONT, FS["md"], "bold"),
+            fg_color=self._accent(), button_color=self._accent(),
+            button_hover_color=self._accent(), text_color="#ffffff",
+            dropdown_fg_color=c["card"], dropdown_hover_color=c["hover"],
+            dropdown_text_color=c["text"], corner_radius=RADIUS["md"], width=170, height=36)
+        self.action_menu.set(current_label)
+        self.action_menu.pack(side="left", padx=(SP["sm"], 0))
+        self.inputs.append(self.action_menu)
+
+        # ---- 3. Sélecteur de mode (SegmentedButton) ----
+        self.mode_seg = ctk.CTkSegmentedButton(
+            self.root_fr, values=self.t["modes"], command=self._on_mode_change,
+            font=ctk.CTkFont(FONT, FS["sm"], "bold"),
+            fg_color=c["card"], selected_color=c["track"],
+            selected_hover_color=c["hover"], unselected_color=c["card"],
+            unselected_hover_color=c["hover"], text_color=c["text"],
+            corner_radius=RADIUS["md"], height=36)
+        self.mode_seg.set(self._mode_key2label[self.mode.get()])
+        self.mode_seg.pack(fill="x", pady=(SP["md"], 0))
+        self.inputs.append(self.mode_seg)
+        # Compat : certaines méthodes historiques itèrent sur tab_btns pour update visuel
         self.tab_btns = {}
-        for internal, label in zip(["Minuteur", "Heure fixe", "Processus", "Réseau", "Scénario"],
-                                   self.t["modes"]):
-            b = tk.Label(tabs, text=label, bg=c["card"], fg=c["muted"],
-                         font=(FONT, 9, "bold"), pady=7, cursor="hand2")
-            b.pack(side="left", expand=True, fill="x", padx=2, pady=3)
-            b.bind("<Button-1>", lambda e, n=internal: self._set_mode(n))
-            self.tab_btns[internal] = b
 
-        s = self.RING
-        self.canvas = tk.Canvas(self.root_fr, width=s, height=s, bg=c["bg"], highlightthickness=0)
-        self.canvas.pack(pady=14)
-        m = 14; box = (m, m, s - m, s - m)
-        self.canvas.create_oval(*box, outline=c["track"], width=12)
-        self.arc = self.canvas.create_arc(*box, start=90, extent=0, style="arc", width=12, outline=c["text"])
-        self.t_main = self.canvas.create_text(s/2, s/2 - 10, fill=c["text"], font=(FONT, 32, "bold"))
-        self.t_sub = self.canvas.create_text(s/2, s/2 + 24, fill=c["muted"], font=(FONT, 10))
-        self.t_eta = self.canvas.create_text(s/2, s/2 + 44, fill=c["muted"], font=(FONT, 9))
-
-        acts = tk.Frame(self.root_fr, bg=c["card"]); acts.pack(fill="x", pady=(0, 12))
-        self.act_btns = {}
-        for internal, label in zip(ACTIONS, self.t["actions"]):
-            b = tk.Label(acts, text=label, bg=c["card"], fg=c["muted"],
-                         font=(FONT, 8, "bold"), pady=7, cursor="hand2")
-            b.pack(side="left", expand=True, fill="x", padx=2, pady=3)
-            b.bind("<Button-1>", lambda e, n=internal: self._set_action(n))
-            self.act_btns[internal] = b
-
-        self.panel_host = tk.Frame(self.root_fr, bg=c["bg"]); self.panel_host.pack(fill="x")
+        # ---- 4. Panneau de mode ----
+        self.panel_host = ctk.CTkFrame(self.root_fr, fg_color="transparent")
+        self.panel_host.pack(fill="x", pady=(SP["md"], 0))
         self.panels = {"Minuteur": self._panel_timer(), "Heure fixe": self._panel_clock(),
                        "Processus": self._panel_process(), "Réseau": self._panel_network(),
                        "Scénario": self._panel_scenario()}
 
-        opts = tk.Frame(self.root_fr, bg=c["bg"]); opts.pack(fill="x", pady=(12, 10))
-        tk.Checkbutton(opts, text=self.t["force"], variable=self.force, command=self._save,
-                       bg=c["bg"], fg=c["muted"], selectcolor=c["card"], activebackground=c["bg"],
-                       activeforeground=c["text"], font=(FONT, 9), bd=0, highlightthickness=0).pack(side="left")
+        # ---- 5. Anneau de progression ----
+        s = self.RING
+        self.canvas = tk.Canvas(self.root_fr, width=s, height=s, bg=c["bg"], highlightthickness=0)
+        self.canvas.pack(pady=(SP["md"], SP["sm"]))
+        m = 14; box = (m, m, s - m, s - m)
+        self.canvas.create_oval(*box, outline=c["track"], width=12)
+        self.arc = self.canvas.create_arc(*box, start=90, extent=0, style="arc", width=12,
+                                           outline=self._accent())
+        self.t_main = self.canvas.create_text(s/2, s/2 - 10, fill=c["text"],
+                                               font=(FONT, FS["display"], "bold"))
+        self.t_sub = self.canvas.create_text(s/2, s/2 + 24, fill=c["muted"], font=(FONT, FS["sm"]))
+        self.t_eta = self.canvas.create_text(s/2, s/2 + 44, fill=c["muted"], font=(FONT, FS["xs"]))
 
-        self.extend_row = tk.Frame(self.root_fr, bg=c["bg"]); self.extend_row.pack(fill="x")
+        # ---- Compat : act_btns est utilisé par _next_scenario/_api_trigger pour afficher l'action.
+        # Comme le dropdown a remplacé les 5 pastilles, on garde un dict vide (les boucles tolèrent).
+        self.act_btns = {}
 
-        self.main_btn = tk.Label(self.root_fr, text=self.t["start"], fg="#ffffff",
-                                 font=(FONT, 13, "bold"), pady=12, cursor="hand2")
-        self.main_btn.pack(fill="x", pady=(6, 4))
-        self.main_btn.bind("<Button-1>", lambda e: self._toggle())
+        # ---- 6. Options + récap ----
+        opts = ctk.CTkFrame(self.root_fr, fg_color="transparent")
+        opts.pack(fill="x", pady=(SP["sm"], SP["xs"]))
+        self.force_chk = ctk.CTkCheckBox(
+            opts, text=self.t["force"], variable=self.force, command=self._save,
+            font=ctk.CTkFont(FONT, FS["sm"]), text_color=c["muted"],
+            fg_color=self._accent(), hover_color=self._accent(),
+            border_color=c["border"], checkmark_color="#ffffff",
+            checkbox_width=18, checkbox_height=18, corner_radius=RADIUS["sm"])
+        self.force_chk.pack(side="left")
+
+        self.recap_lbl = tk.Label(self.root_fr, text="", bg=c["bg"], fg=c["muted"],
+                                   font=(FONT, FS["sm"], "italic"))
+        self.recap_lbl.pack(fill="x", pady=(SP["sm"], 0))
+
+        # Boutons d'extension (+5/+15/+1h) pendant countdown — rangée persistante
+        self.extend_row = ctk.CTkFrame(self.root_fr, fg_color="transparent")
+        self.extend_row.pack(fill="x")
+
+        # ---- 7. Bouton primaire ----
+        self.main_btn = ctk.CTkButton(
+            self.root_fr, text=self.t["start"], command=self._toggle,
+            fg_color=self._accent(), hover_color=self._accent(),
+            text_color="#ffffff", font=ctk.CTkFont(FONT, FS["md"], "bold"),
+            height=48, corner_radius=RADIUS["md"])
+        self.main_btn.pack(fill="x", pady=(SP["sm"], SP["xs"]))
 
         self._update_pin()
 
@@ -773,13 +866,21 @@ class App(tk.Tk):
     def _accent(self):
         return ACTIONS[self.action.get()]
 
+    def _on_mode_change(self, label):
+        key = self._mode_label2key.get(label, label)
+        self._set_mode(key)
+
+    def _on_action_change(self, label):
+        key = self._act_label2key.get(label, label)
+        self._set_action(key)
+
     def _set_mode(self, name, save=True):
         if self.state_ != "idle": return
-        c = self.theme
         self.mode.set(name)
-        for n, b in self.tab_btns.items():
-            b.configure(bg=c["track"] if n == name else c["card"],
-                        fg=c["text"] if n == name else c["muted"])
+        if hasattr(self, "mode_seg"):
+            lbl = self._mode_key2label.get(name, name)
+            if self.mode_seg.get() != lbl:
+                self.mode_seg.set(lbl)
         for n, p in self.panels.items(): p.pack_forget()
         self.panels[name].pack(fill="x")
         if name == "Processus": self._refresh_procs()
@@ -788,13 +889,20 @@ class App(tk.Tk):
 
     def _set_action(self, name, save=True):
         if self.state_ != "idle": return
-        c = self.theme
         self.action.set(name)
-        for n, b in self.act_btns.items():
-            b.configure(bg=ACTIONS[n] if n == name else c["card"],
-                        fg="#ffffff" if n == name else c["muted"])
-        self.canvas.itemconfigure(self.arc, outline=self._accent())
-        self.main_btn.configure(bg=self._accent())
+        accent = self._accent()
+        if hasattr(self, "action_menu"):
+            lbl = self._act_key2label.get(name, name)
+            if self.action_menu.get() != lbl:
+                self.action_menu.set(lbl)
+            self.action_menu.configure(fg_color=accent, button_color=accent,
+                                        button_hover_color=accent)
+        if hasattr(self, "canvas"):
+            self.canvas.itemconfigure(self.arc, outline=accent)
+        if hasattr(self, "main_btn"):
+            self.main_btn.configure(fg_color=accent, hover_color=accent)
+        if hasattr(self, "force_chk"):
+            self.force_chk.configure(fg_color=accent, hover_color=accent)
         self._refresh_idle()
         if save: self._save()
 
@@ -804,7 +912,23 @@ class App(tk.Tk):
         self._update_pin(); self._save()
 
     def _update_pin(self):
-        self.pin_btn.configure(fg=self.theme["text"] if self.pin.get() else self.theme["muted"])
+        c = self.theme
+        self.pin_btn.configure(fg_color=c["track"] if self.pin.get() else c["card"])
+
+    def _open_menu(self):
+        """Menu contextuel regroupant Stats / Profils / Paramètres."""
+        c = self.theme
+        m = tk.Menu(self, tearoff=0, bg=c["card"], fg=c["text"],
+                    activebackground=c["hover"], activeforeground=c["text"],
+                    bd=0, relief="flat", font=(FONT, FS["sm"]))
+        m.add_command(label="📊  " + self.t["stats"], command=self.open_stats)
+        m.add_command(label="💾  " + self.t["profiles"], command=self.open_profiles)
+        m.add_command(label="⚙  " + self.t["settings"], command=self.open_settings)
+        try:
+            x = self.winfo_pointerx(); y = self.winfo_pointery()
+            m.tk_popup(x, y)
+        finally:
+            m.grab_release()
 
     def _refresh_procs(self):
         try: self.combo["values"] = list_processes()
@@ -866,6 +990,42 @@ class App(tk.Tk):
                        "Chaîne d'actions" if self.lang == "fr" else "Action chain",
                        f"total {fmt_short(total, self.lang)}", big=False)
             self.canvas.itemconfigure(self.arc, extent=-359.9)
+        # Récapitulatif dynamique au-dessus du bouton Démarrer
+        if hasattr(self, "recap_lbl"):
+            self.recap_lbl.configure(text=self._build_recap())
+
+    def _build_recap(self):
+        """Phrase récapitulative affichée au-dessus du bouton Démarrer."""
+        act, mode, lang = self.action.get(), self.mode.get(), self.lang
+        if mode == "Minuteur":
+            sec = self._hms()
+            if sec <= 0:
+                return ("Choisis une durée pour voir le récapitulatif."
+                        if lang == "fr" else "Pick a duration to preview.")
+            end = (dt.datetime.now() + dt.timedelta(seconds=sec)).strftime("%H:%M")
+            return (f"→ {act} dans {fmt_short(sec, lang)} (à {end})" if lang == "fr"
+                    else f"→ {act} in {fmt_short(sec, lang)} (at {end})")
+        if mode == "Heure fixe":
+            sec, target = self._secs_until_clock()
+            when = target.strftime("%H:%M")
+            day = (" demain" if target.date() > dt.date.today() else "") if lang == "fr" \
+                  else (" tomorrow" if target.date() > dt.date.today() else "")
+            return (f"→ {act} à {when}{day} (dans {fmt_short(sec, lang)})" if lang == "fr"
+                    else f"→ {act} at {when}{day} (in {fmt_short(sec, lang)})")
+        if mode == "Processus":
+            name = self.proc.get().strip() or "…"
+            return (f"→ {act} à la fermeture de « {name} »" if lang == "fr"
+                    else f"→ {act} when « {name} » closes")
+        if mode == "Réseau":
+            return (f"→ {act} quand le débit chute sous {to_int(self.net_thr.get())} Ko/s "
+                    f"pendant {to_int(self.net_min.get())} min" if lang == "fr"
+                    else f"→ {act} when speed stays below {to_int(self.net_thr.get())} KB/s "
+                    f"for {to_int(self.net_min.get())} min")
+        # Scénario
+        total = sum(st["delay"] for st in self.scenario)
+        return (f"→ {len(self.scenario)} étapes, durée totale {fmt_short(total, lang)}"
+                if lang == "fr"
+                else f"→ {len(self.scenario)} steps, total {fmt_short(total, lang)}")
 
     def _clock_loop(self):
         if self.state_ == "idle" and self.mode.get() in ("Minuteur", "Heure fixe"):
@@ -912,20 +1072,29 @@ class App(tk.Tk):
         if not self.scenario_queue:
             self.state_ = "idle"; self._lock(False); self._refresh_idle(); return
         step = self.scenario_queue.pop(0)
+        # Mise à jour visuelle de l'action sans toucher au verrou (bypass _set_action qui l'exige idle)
         self.action.set(step["action"])
-        for n, b in self.act_btns.items():
-            b.configure(bg=ACTIONS[n] if n == step["action"] else self.theme["card"],
-                        fg="#ffffff" if n == step["action"] else self.theme["muted"])
-        self.canvas.itemconfigure(self.arc, outline=self._accent())
-        self.main_btn.configure(bg=self.theme["track"])
+        accent = self._accent()
+        if hasattr(self, "action_menu"):
+            self.action_menu.set(self._act_key2label.get(step["action"], step["action"]))
+            self.action_menu.configure(fg_color=accent, button_color=accent,
+                                        button_hover_color=accent)
+        self.canvas.itemconfigure(self.arc, outline=accent)
+        self.main_btn.configure(fg_color=self.theme["track"], hover_color=self.theme["hover"])
         self._begin_countdown(step["delay"], reason=f"Étape · {step['action']}")
 
     def _lock(self, locked):
         for w in self.inputs:
             try: w.configure(state="disabled" if locked else "normal")
             except tk.TclError: pass
-        self.main_btn.configure(text=self.t["cancel"] if locked else self.t["start"],
-                                bg=self.theme["track"] if locked else self._accent())
+            except Exception: pass
+        accent = self._accent()
+        if locked:
+            self.main_btn.configure(text=self.t["cancel"], fg_color=self.theme["track"],
+                                     hover_color=self.theme["hover"], text_color=self.theme["text"])
+        else:
+            self.main_btn.configure(text=self.t["start"], fg_color=accent,
+                                     hover_color=accent, text_color="#ffffff")
 
     def _begin_countdown(self, sec, reason=""):
         self.state_ = "countdown"; self.total = sec
@@ -1059,10 +1228,8 @@ class App(tk.Tk):
 
     # ========= API =========
     def _api_trigger(self, act, secs):
-        self._cancel(); self.action.set(act)
-        for n, b in self.act_btns.items():
-            b.configure(bg=ACTIONS[n] if n == act else self.theme["card"],
-                        fg="#ffffff" if n == act else self.theme["muted"])
+        self._cancel()
+        self._set_action(act, save=False)
         self._set_mode("Minuteur", save=False)
         h, r = divmod(secs, 3600); m, s = divmod(r, 60)
         self.h.set(str(h)); self.m.set(str(m)); self.s.set(str(s))
@@ -1115,13 +1282,19 @@ class App(tk.Tk):
 
     # ========= FENÊTRES SECONDAIRES =========
     def toggle_compact(self):
+        """Mode compact : ne garde que l'anneau + bouton primaire + récap."""
         self.compact = not self.compact
-        # masque la plupart des widgets
+        keep = {self.canvas, self.main_btn, self.recap_lbl, self.extend_row}
         for w in self.root_fr.winfo_children():
-            if w not in (self.canvas, self.main_btn):
-                if self.compact: w.pack_forget()
-                else: w.pack(fill="x")
-        if not self.compact: self._build()  # reconstruit propre
+            if w in keep:
+                continue
+            if self.compact:
+                w.pack_forget()
+            else:
+                # Repack dans l'ordre : rebuild complet est plus fiable
+                pass
+        if not self.compact:
+            self._build()
 
     def open_stats(self):
         StatsWindow(self)
